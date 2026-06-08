@@ -54,14 +54,15 @@ if __name__ == "__main__":
     for vm in all_vms:
         log.debug(f"VM: {vm.name}")
 
-        if args.filter == "category":
+        if args.filter_type == "category":
             if not vm.categories or categories["sbfix_needed_true"].ext_id not in [cat.ext_id for cat in vm.categories]:
                 log.debug("  Not tagged with sbfix_needed:true, skipping")
                 continue
         
-        if args.filter == "name":
-            if not vm.name.startswith("vba1q") and not vm.name.startswith("vba1a"):
-            # if not vm.name in ["vba1uz990068", "vba1uz990069", "vba1uz990070", "vba1uz990071", "vba1uz990072", "vba1uz990073", "vba1uz990074", "vba1uz990075", "vba1uz990076", "vba1uz990077"]:
+        if args.filter_type == "name":
+            if not vm.name.__contains__(args.filter_value):
+            # if not vm.name.startswith("vba1q") and not vm.name.startswith("vba1a"):
+                log.debug(f"  VM name does not contain {args.filter_value}, skipping")
                 log.debug("  VM name does not start with vba1q or vba1a, skipping")
                 continue
 
@@ -72,10 +73,10 @@ if __name__ == "__main__":
 
         fix_needed_vms.append(vm)
 
-    log.info(f"Found {len(fix_needed_vms)} VMs to be targeted for SBfix based on filter: {args.filter}")
+    log.info(f"Found {len(fix_needed_vms)} VMs to be targeted for SBfix based on filter type: {args.filter_type}")
 
     if fix_needed_vms:
-        print(f"\nVMs filtered using: {args.filter}")
+        print(f"\nVMs filtered using: {args.filter_type}")
         print(render_power_state_table(fix_needed_vms))
 
     powered_on_vms = [vm for vm in fix_needed_vms if vm.power_state == "ON"]
@@ -179,4 +180,6 @@ if __name__ == "__main__":
 
         log.info(f"VM {selected_vm.name}  - SBfix completed successfully for this VM")
         log.info("-" * 50)
+        log.info("")
+        
     log.info("SBfix run completed")

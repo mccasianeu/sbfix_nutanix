@@ -61,10 +61,16 @@ def parse_args() -> argparse.Namespace:
         help="VM list page size. Default: 100",
     )
     parser.add_argument(
-        "--filter",
+        "--filter-type",
         type=str,
         default="name",
-        help="category/name",
+        help="category/name. If Category is selected, the category needed is sbfix_needed:true(hardcoded)",
+    )
+    parser.add_argument(
+        "--filter-value",
+        type=str,
+        default="name",
+        help="Part of the VM name",
     )
     return parser.parse_args()
 
