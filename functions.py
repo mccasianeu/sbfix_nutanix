@@ -379,7 +379,7 @@ def deactivate_secure_boot(log, vm_api, tasks_api, vm) -> str:
             exit(1)
 
         data.boot_config.is_secure_boot_enabled = False
-
+        
         try:
             response = vm_api.update_vm_by_id(extId=ext_id, body=data, if_match=etag_value)
         except Exception as e:

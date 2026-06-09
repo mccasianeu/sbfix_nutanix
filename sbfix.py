@@ -111,6 +111,7 @@ if __name__ == "__main__":
 
     print("Proceeding with the following list of VMs to be patched:")
     vm_index = 0
+    _project = None
     for selected_vm in fix_needed_vms:
         vm_index = vm_index + 1
         log.info(
@@ -120,6 +121,13 @@ if __name__ == "__main__":
             f"Secure Boot: {nested_value(selected_vm, 'boot_config', 'is_secure_boot_enabled')}, "
             f"vTPM: {nested_value(selected_vm, 'vtpm_config', 'is_vtpm_enabled')})"
         )
+        
+        if _project is None and selected_vm.project is not None:
+            _project = selected_vm.project
+
+        if selected_vm.project is None:
+            log.warning(f"VM {selected_vm.name}  - No project assigned, skipping VM as SBfix requires the VM to be in a project")
+            continue
 
         if selected_vm.power_state == "ON": # we assume no powered on VMs remain if the user chose to skip them, therefore if something is powered on here, it means the user chose to shut them down, so we proceed with shutdown without asking again.
             log.info(f"VM {selected_vm.name}  - Shutting down VM")
