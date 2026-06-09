@@ -1,8 +1,7 @@
-from typing import Any, Iterable
 #!/usr/bin/env python3
+from typing import Any
 
 import argparse
-import csv
 import getpass
 import logging
 import ssl
@@ -10,7 +9,7 @@ import warnings
 import sys
 import time
 import urllib3
-from dataclasses import dataclass
+
 from datetime import datetime
 
 from ntnx_vmm_py_client import (
@@ -311,9 +310,11 @@ def shutdown_vm(log, vm_api, tasks_api, vm) -> str:
                 break
             elif task_status == "failed":
                 log.error(f"Shutdown failed for VM {vm_name}")
-                if attempt < retries - 1:
-                    continue
-                exit(1)
+                break
+
+        if attempt < retries - 1 and task_status == "failed":
+            continue
+        exit(1)
         
         retries = 0
         while True:
@@ -344,7 +345,7 @@ def get_task_status(log, tasks_api, task_id) -> str:
             except Exception as e:
                 log.error(f"Failed to get status for task {task_id}: {e}")
                 if attempt < retries - 1:
-                    continue
+                    break
                 return "failure"
             time.sleep(5)
 
@@ -399,9 +400,12 @@ def deactivate_secure_boot(log, vm_api, tasks_api, vm) -> str:
                 return "success"
             elif task_status == "failed":
                 log.error(f"Secure boot deactivation failed for VM {vm_name}")
-                if attempt < retries - 1:
-                    continue
-                exit(1)
+                break
+
+        if attempt < retries - 1 and task_status == "failed":
+            continue
+            
+        exit(1)
 
 
 def reactivate_secure_boot_and_vtpm(log, vm_api, tasks_api, vm) -> str:
@@ -448,9 +452,12 @@ def reactivate_secure_boot_and_vtpm(log, vm_api, tasks_api, vm) -> str:
                 return "success"
             elif task_status == "failed":
                 log.error(f"Secure boot and vTPM reactivation failed for VM {vm_name}")
-                if attempt < retries - 1:
-                    continue
-                exit(1)
+                break
+
+        if attempt < retries - 1 and task_status == "failed":
+            continue
+        
+        exit(1)
 
 def add_vm_to_category(log, vm_api, tasks_api, vm, categories) -> str:
 
@@ -489,9 +496,11 @@ def add_vm_to_category(log, vm_api, tasks_api, vm, categories) -> str:
                 return "success"
             elif task_status == "failed":
                 log.error(f"Failed to add VM {vm_name} to category '{category.key}'.")
-                if attempt < retries - 1:
-                    continue
-                exit(1)
+                break
+
+        if attempt < retries - 1 and task_status == "failed":
+            continue
+        exit(1)
 
 def remove_vm_from_category(log, vm_api, tasks_api, vm, categories) -> str:
     retries = 3
@@ -530,9 +539,11 @@ def remove_vm_from_category(log, vm_api, tasks_api, vm, categories) -> str:
                 return "success"
             elif task_status == "failed":
                 log.error(f"Failed to add VM {vm_name} to category '{category.key}'.")
-                if attempt < retries - 1:
-                    continue
-                exit(1)
+                break
+
+            if attempt < retries - 1 and task_status == "failed":
+                continue
+            exit(1)
 
 def get_current_power_state(log, vm_api, vm) -> str:
     retries = 3
