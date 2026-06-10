@@ -29,6 +29,15 @@ from ntnx_prism_py_client.api.tasks_api import TasksApi
 from ntnx_vmm_py_client import AhvConfigAssociateVmCategoriesParams
 
 
+def parse_bool_arg(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y"}:
+        return True
+    if normalized in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value: true/false")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -70,6 +79,22 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="name",
         help="Part of the VM name",
+    )
+    parser.add_argument(
+        "--only-powered-off",
+        type=parse_bool_arg,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Skip powered-on VMs automatically. Example: --only-powered-off=true",
+    )
+    parser.add_argument(
+        "--auto-approve",
+        type=parse_bool_arg,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Auto-approve final confirmation prompt. Example: --auto-approve=true",
     )
     return parser.parse_args()
 

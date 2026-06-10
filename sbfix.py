@@ -232,7 +232,11 @@ if __name__ == "__main__":
     powered_on_vms = [vm for vm in fix_needed_vms if vm.power_state == "ON"]
     skipped_powered_on_vms = False
     if powered_on_vms:
-        powered_on_action = ask_powered_on_action(fix_needed_vms, powered_on_vms)
+        if args.only_powered_off:
+            powered_on_action = "skip"
+            log.info("only-powered-off enabled: powered-on VMs will be skipped")
+        else:
+            powered_on_action = ask_powered_on_action(fix_needed_vms, powered_on_vms)
         if powered_on_action == "skip":
             powered_on_ids = {vm.ext_id for vm in powered_on_vms}
             fix_needed_vms = [vm for vm in fix_needed_vms if vm.ext_id not in powered_on_ids]
@@ -249,13 +253,11 @@ if __name__ == "__main__":
         print("\nVMs selected for SBfix after skipping powered-on VMs:")
         print(render_power_state_table(fix_needed_vms))
 
-        if not confirm_action(f"Proceed with SBfix for the {len(fix_needed_vms)} VMs listed above?"):
-            print("Stopping before applying SBfix.")
-            raise SystemExit(0)
-    else:
-        if not confirm_action(f"Proceed with SBfix for the {len(fix_needed_vms)} VMs listed above?"):
-            print("Stopping before applying SBfix.")
-            raise SystemExit(0)
+    if args.auto_approve:
+        log.info("auto-approve enabled: proceeding without confirmation prompt")
+    elif not confirm_action(f"Proceed with SBfix for the {len(fix_needed_vms)} VMs listed above?"):
+        print("Stopping before applying SBfix.")
+        raise SystemExit(0)
 
     print("Proceeding with the following list of VMs to be patched:")
 
