@@ -379,7 +379,7 @@ def deactivate_secure_boot(log, vm_api, tasks_api, vm) -> str:
             exit(1)
 
         data.boot_config.is_secure_boot_enabled = False
-        
+
         try:
             response = vm_api.update_vm_by_id(extId=ext_id, body=data, if_match=etag_value)
         except Exception as e:
@@ -461,6 +461,9 @@ def reactivate_secure_boot_and_vtpm(log, vm_api, tasks_api, vm) -> str:
 
 def add_vm_to_category(log, vm_api, tasks_api, vm, categories) -> str:
 
+    existing_categories = vm.categories or []
+    
+    
     retries = 3
     for attempt in range(retries):
         vm_name = vm.name
@@ -473,13 +476,22 @@ def add_vm_to_category(log, vm_api, tasks_api, vm, categories) -> str:
         ahvConfigAssociateVmCategoriesParams = AhvConfigAssociateVmCategoriesParams()
         ahvConfigAssociateVmCategoriesParams.categories = []
         for category in categories:
+            # skip if the category is already associated with the VM to avoid unnecessary API calls and task creation
+            if category.ext_id in [ec.ext_id for ec in existing_categories]:
+                log.info(f"VM {vm.name} is already in the specified categories, skipping association.")
+                continue
             ahvConfigAssociateVmCategoriesParams.categories.append(category)
+        
+        if ahvConfigAssociateVmCategoriesParams.categories == []:
+            log.info(f"No new categories to associate for VM {vm.name}, skipping API call.")
+            return "success"
+        
         try:
             # Add VM to category
             update_response = vm_api.associate_categories(extId=ext_id, body=ahvConfigAssociateVmCategoriesParams, if_match=etag_value)
-            log.info(f"VM {vm_name} added to category '{category.key}' successfully.")
+            log.info(f"VM {vm_name} mapped to category '{category.key}:{category.value}' successfully.")
         except Exception as e:
-            log.error(f"Failed to add VM {vm_name} to category '{category.key}': {e}")
+            log.error(f"Failed to add VM {vm_name} to category '{category.key}:{category.value}': {e}")
             if attempt < retries - 1:
                 continue
             return "failure"
@@ -492,10 +504,10 @@ def add_vm_to_category(log, vm_api, tasks_api, vm, categories) -> str:
         while True:
             task_status = get_task_status(log, tasks_api, task_id)
             if task_status == "succeeded":
-                log.info(f"VM {vm_name} successfully added to category '{category.key}'.")
+                log.info(f"VM {vm_name} successfully mapped to category '{category.key}':{category.value}.")
                 return "success"
             elif task_status == "failed":
-                log.error(f"Failed to add VM {vm_name} to category '{category.key}'.")
+                log.error(f"Failed to map VM {vm_name} to category '{category.key}':{category.value}.")
                 break
 
         if attempt < retries - 1 and task_status == "failed":
@@ -559,3 +571,36 @@ def get_current_power_state(log, vm_api, vm) -> str:
             if attempt < retries - 1:
                 continue
             return "unknown"
+
+def write_summary_log(log_dir, results):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_path = log_dir / f"sbfix_summary_{timestamp}.log"
+
+    success_count = sum(1 for result in results if result["status"] == "success")
+    skipped = [result for result in results if result["status"] == "skipped"]
+    failed = [result for result in results if result["status"] == "failed"]
+
+    with summary_path.open("w", encoding="utf-8") as summary_file:
+        summary_file.write("SBfix run summary\n")
+        summary_file.write(f"Generated: {timestamp}\n")
+        summary_file.write(
+            f"Totals - success: {success_count}, skipped: {len(skipped)}, failed: {len(failed)}\n"
+        )
+
+        summary_file.write("\nSkipped VMs:\n")
+        if skipped:
+            for result in sorted(skipped, key=lambda item: item["vm"].lower()):
+                reason = result["reason"] or "No reason provided"
+                summary_file.write(f"- {result['vm']}: {reason}\n")
+        else:
+            summary_file.write("- none\n")
+
+        summary_file.write("\nFailed VMs:\n")
+        if failed:
+            for result in sorted(failed, key=lambda item: item["vm"].lower()):
+                reason = result["reason"] or "No reason provided"
+                summary_file.write(f"- {result['vm']}: {reason}\n")
+        else:
+            summary_file.write("- none\n")
+
+    return summary_path

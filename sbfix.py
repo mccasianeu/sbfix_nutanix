@@ -23,6 +23,7 @@ from functions import (
     remove_vm_from_category,
     render_power_state_table,
     shutdown_vm,
+    write_summary_log
 )
 
 LOG_DIR = Path("./log")
@@ -285,8 +286,12 @@ if __name__ == "__main__":
     skipped_count = sum(1 for result in results if result["status"] == "skipped")
     failed_count = sum(1 for result in results if result["status"] == "failed")
 
+    summary_path = write_summary_log(LOG_DIR, results)
+
     log.info(
         f"SBfix run completed - success: {success_count}, skipped: {skipped_count}, failed: {failed_count}"
     )
+    log. info(f"Detailed summary written to {summary_path}")
+
     if failed_count > 0:
         raise SystemExit(1)
