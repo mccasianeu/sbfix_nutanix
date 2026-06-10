@@ -1,29 +1,170 @@
 #!/usr/bin/env python3
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import logging
+import time
+from pathlib import Path
+
 from functions import (
-    build_vm_api,
-    build_categories_api,
-    list_all_vms,
-    list_all_categories,
-    render_power_state_table,
-    ask_powered_on_action,
-    confirm_action,
-    nested_value,
-    shutdown_vm,
-    create_logger,
-    configure_quiet_output,
-    parse_args,
-    deactivate_secure_boot,
-    reactivate_secure_boot_and_vtpm,
-    build_tasks_api,
     add_vm_to_category,
+    ask_powered_on_action,
+    build_categories_api,
+    build_tasks_api,
+    build_vm_api,
+    configure_quiet_output,
+    confirm_action,
+    create_logger,
+    deactivate_secure_boot,
+    get_current_power_state,
+    list_all_categories,
+    list_all_vms,
+    nested_value,
+    parse_args,
+    reactivate_secure_boot_and_vtpm,
     remove_vm_from_category,
-    get_current_power_state
+    render_power_state_table,
+    shutdown_vm,
 )
 
-
-import logging
-from pathlib import Path
 LOG_DIR = Path("./log")
+MAX_PARALLEL_TASKS = 10
+TASK_START_INTERVAL_SECONDS = 2
+
+
+def process_vm(selected_vm, vm_index, total_vms, log, vm_api, tasks_api, categories):
+    log.info(
+        f"Processing VM {vm_index}/{total_vms} - "
+        f"VM: {selected_vm.name} "
+        f"(Power State: {selected_vm.power_state}, "
+        f"Secure Boot: {nested_value(selected_vm, 'boot_config', 'is_secure_boot_enabled')}, "
+        f"vTPM: {nested_value(selected_vm, 'vtpm_config', 'is_vtpm_enabled')})"
+    )
+
+    try:
+        if selected_vm.project is None:
+            message = (
+                f"VM {selected_vm.name}  - No project assigned, skipping VM as SBfix requires the VM to be in a project"
+            )
+            log.warning(message)
+            return {"vm": selected_vm.name, "status": "skipped", "reason": message}
+
+        if selected_vm.power_state == "ON":
+            log.info(f"VM {selected_vm.name}  - Shutting down VM")
+            shutdown_result = shutdown_vm(log, vm_api, tasks_api, selected_vm)
+            if shutdown_result in {"failed", "failure"}:
+                message = f"VM {selected_vm.name}  - Shutdown failed"
+                log.error(message)
+                return {"vm": selected_vm.name, "status": "failed", "reason": message}
+
+            log.info(
+                f"VM {selected_vm.name}  - Waiting for VM to be powered off before proceeding with SBfix steps"
+            )
+            log.info(
+                f"VM {selected_vm.name}  - adding the sbfix_vm_shutdown: True category to indicate the VM was shut down as part of the SBfix run"
+            )
+
+        current_power_state = get_current_power_state(log, vm_api, selected_vm)
+        if current_power_state != "OFF":
+            message = (
+                f"VM {selected_vm.name}  - VM is ON; expected state Off. Asssuming it was powered on in the meantime... skipping it."
+            )
+            log.error(message)
+            return {"vm": selected_vm.name, "status": "skipped", "reason": message}
+
+        log.info(f"VM {selected_vm.name}  - Deactivating Secure Boot if enabled")
+        post_check_result = deactivate_secure_boot(log, vm_api, tasks_api, selected_vm)
+        log.info(
+            f"VM {selected_vm.name}  - Post-Check: Verifying Secure Boot is disabled: {post_check_result}"
+        )
+        if post_check_result in {"failed", "failure"}:
+            message = f"VM {selected_vm.name}  - SBfix failed at Secure Boot deactivation step"
+            log.error(message)
+            return {"vm": selected_vm.name, "status": "failed", "reason": message}
+
+        log.info(
+            f"VM {selected_vm.name}  - Adding the sbfix_sb_deactivated:true category to indicate SB was deactivated as part of the SBfix run"
+        )
+        post_check_result = add_vm_to_category(
+            log,
+            vm_api,
+            tasks_api,
+            selected_vm,
+            [categories["sbfix_sb_deactivated_true"]],
+        )
+        log.debug(
+            f"VM {selected_vm.name}  - Post-Check: Verifying sbfix_sb_deactivated_true category was added: {post_check_result}"
+        )
+        if post_check_result in {"failed", "failure"}:
+            message = f"VM {selected_vm.name}  - SBfix failed at adding sbfix_sb_deactivated_true step"
+            log.error(message)
+            return {"vm": selected_vm.name, "status": "failed", "reason": message}
+
+        log.info(f"VM {selected_vm.name}  - Reactivating Secure Boot and activating vTPM")
+        post_check_result = reactivate_secure_boot_and_vtpm(log, vm_api, tasks_api, selected_vm)
+        log.debug(
+            f"VM {selected_vm.name}  - Post-Check: Verifying Secure Boot is enabled and vTPM is enabled: {post_check_result}"
+        )
+        if post_check_result in {"failed", "failure"}:
+            message = (
+                f"VM {selected_vm.name}  - SBfix failed at Secure Boot re-activation and vTPM activation step"
+            )
+            log.error(message)
+            return {"vm": selected_vm.name, "status": "failed", "reason": message}
+
+        log.info(
+            f"VM {selected_vm.name}  - Adding the sbfix_secure_boot_reactivated:true and sbfix_vtpm_activated:true categories to indicate SB was reactivated and vTPM was activated as part of the SBfix run"
+        )
+        post_check_result = add_vm_to_category(
+            log,
+            vm_api,
+            tasks_api,
+            selected_vm,
+            [
+                categories["sbfix_secure_boot_reactivated_true"],
+                categories["sbfix_vtpm_activated_true"],
+                categories["sbfix_needed_false"],
+            ],
+        )
+        log.debug(
+            f"VM {selected_vm.name}  - Post-Check: Verifying sbfix_secure_boot_reactivated_true, sbfix_vtpm_activated_true and sbfix_needed_false categories were added: {post_check_result}"
+        )
+        if post_check_result in {"failed", "failure"}:
+            message = (
+                f"VM {selected_vm.name}  - SBfix failed at adding sbfix_secure_boot_reactivated_true and sbfix_vtpm_activated_true step"
+            )
+            log.error(message)
+            return {"vm": selected_vm.name, "status": "failed", "reason": message}
+
+        if selected_vm.categories and categories["sbfix_needed_true"].ext_id in [
+            cat.ext_id for cat in selected_vm.categories
+        ]:
+            log.info(f"VM {selected_vm.name}  - Updating categories to reflect SBfix run results")
+            post_check_result = remove_vm_from_category(
+                log,
+                vm_api,
+                tasks_api,
+                selected_vm,
+                [categories["sbfix_needed_true"]],
+            )
+            log.debug(
+                f"VM {selected_vm.name}  - Post-Check: Verifying sbfix_needed_true category was removed: {post_check_result}"
+            )
+            if post_check_result in {"failed", "failure"}:
+                message = f"VM {selected_vm.name}  - SBfix failed at removing sbfix_needed_true category step"
+                log.error(message)
+                return {"vm": selected_vm.name, "status": "failed", "reason": message}
+
+        log.info(f"VM {selected_vm.name}  - SBfix completed successfully for this VM")
+        log.info("-" * 50)
+        log.info("")
+        return {"vm": selected_vm.name, "status": "success", "reason": ""}
+    except SystemExit as exc:
+        message = f"VM {selected_vm.name}  - Worker stopped with SystemExit({exc.code})"
+        log.error(message)
+        return {"vm": selected_vm.name, "status": "failed", "reason": message}
+    except Exception as exc:
+        message = f"VM {selected_vm.name}  - Unexpected error: {exc}"
+        log.exception(message)
+        return {"vm": selected_vm.name, "status": "failed", "reason": message}
 
 
 if __name__ == "__main__":
@@ -41,15 +182,14 @@ if __name__ == "__main__":
     all_vms = list_all_vms(vm_api, args.page_size)
     all_categories = list_all_categories(categories_api, args.page_size)
     categories = {
-        "sbfix_needed_true": next((c for c in all_categories if c.key == "sbfix_needed" and c.value == "true"), None,),
-        "sbfix_needed_false": next((c for c in all_categories if c.key == "sbfix_needed" and c.value == "false"), None,),
-        "sbfix_sb_deactivated_true": next((c for c in all_categories if c.key == "sbfix_sb_deactivated" and c.value == "true"), None,),
-        "sbfix_secure_boot_reactivated_true": next((c for c in all_categories if c.key == "sbfix_secure_boot_reactivated" and c.value == "true"), None,),
-        "sbfix_vm_shutdown_true": next((c for c in all_categories if c.key == "sbfix_vm_shutdown" and c.value == "true"), None,),
-        "sbfix_vtpm_activated_true": next((c for c in all_categories if c.key == "sbfix_vtpm_activated" and c.value == "true"), None,),
+        "sbfix_needed_true": next((c for c in all_categories if c.key == "sbfix_needed" and c.value == "true"), None),
+        "sbfix_needed_false": next((c for c in all_categories if c.key == "sbfix_needed" and c.value == "false"), None),
+        "sbfix_sb_deactivated_true": next((c for c in all_categories if c.key == "sbfix_sb_deactivated" and c.value == "true"), None),
+        "sbfix_secure_boot_reactivated_true": next((c for c in all_categories if c.key == "sbfix_secure_boot_reactivated" and c.value == "true"), None),
+        "sbfix_vm_shutdown_true": next((c for c in all_categories if c.key == "sbfix_vm_shutdown" and c.value == "true"), None),
+        "sbfix_vtpm_activated_true": next((c for c in all_categories if c.key == "sbfix_vtpm_activated" and c.value == "true"), None),
     }
 
-    # filter VMs based on category or name, depending on the filter argument. 
     fix_needed_vms = []
     for vm in all_vms:
         log.debug(f"VM: {vm.name}")
@@ -58,22 +198,21 @@ if __name__ == "__main__":
             if not vm.categories or categories["sbfix_needed_true"].ext_id not in [cat.ext_id for cat in vm.categories]:
                 log.debug("  Not tagged with sbfix_needed:true, skipping")
                 continue
-        
+
         if args.filter_type == "name":
-            if not vm.name.__contains__(args.filter_value):
-            # if not vm.name.startswith("vba1q") and not vm.name.startswith("vba1a"):
+            if args.filter_value not in vm.name:
                 log.debug(f"  VM name does not contain {args.filter_value}, skipping")
-                log.debug("  VM name does not start with vba1q or vba1a, skipping")
                 continue
 
-        # skip the VMs that are already patched:
         if vm.categories and categories["sbfix_needed_false"].ext_id in [cat.ext_id for cat in vm.categories]:
             log.debug("  Already tagged with sbfix_needed:false, skipping")
             continue
 
         fix_needed_vms.append(vm)
 
-    log.info(f"Found {len(fix_needed_vms)} VMs to be targeted for SBfix based on filter type: {args.filter_type}")
+    log.info(
+        f"Found {len(fix_needed_vms)} VMs to be targeted for SBfix based on filter type: {args.filter_type}"
+    )
 
     if fix_needed_vms:
         print(f"\nVMs filtered using: {args.filter_type}")
@@ -85,9 +224,7 @@ if __name__ == "__main__":
         powered_on_action = ask_powered_on_action(fix_needed_vms, powered_on_vms)
         if powered_on_action == "skip":
             powered_on_ids = {vm.ext_id for vm in powered_on_vms}
-            fix_needed_vms = [
-                vm for vm in fix_needed_vms if vm.ext_id not in powered_on_ids
-            ]
+            fix_needed_vms = [vm for vm in fix_needed_vms if vm.ext_id not in powered_on_ids]
             skipped_powered_on_vms = True
             log.info(f"Skipping {len(powered_on_vms)} powered-on VMs")
         else:
@@ -105,89 +242,51 @@ if __name__ == "__main__":
             print("Stopping before applying SBfix.")
             raise SystemExit(0)
     else:
-            if not confirm_action(f"Proceed with SBfix for the {len(fix_needed_vms)} VMs listed above?"):
-                print("Stopping before applying SBfix.")
-                raise SystemExit(0)
+        if not confirm_action(f"Proceed with SBfix for the {len(fix_needed_vms)} VMs listed above?"):
+            print("Stopping before applying SBfix.")
+            raise SystemExit(0)
 
     print("Proceeding with the following list of VMs to be patched:")
-    vm_index = 0
-    _project = None
-    for selected_vm in fix_needed_vms:
-        vm_index = vm_index + 1
-        log.info(
-            f"Processing VM {vm_index}/{len(fix_needed_vms)} - "
-            f"VM: {selected_vm.name} "
-            f"(Power State: {selected_vm.power_state}, "
-            f"Secure Boot: {nested_value(selected_vm, 'boot_config', 'is_secure_boot_enabled')}, "
-            f"vTPM: {nested_value(selected_vm, 'vtpm_config', 'is_vtpm_enabled')})"
-        )
-        
-        if _project is None and selected_vm.project is not None:
-            _project = selected_vm.project
 
-        if selected_vm.project is None:
-            log.warning(f"VM {selected_vm.name}  - No project assigned, skipping VM as SBfix requires the VM to be in a project")
-            continue
+    results = []
+    in_flight = {}
+    total_vms = len(fix_needed_vms)
 
-        if selected_vm.power_state == "ON": # we assume no powered on VMs remain if the user chose to skip them, therefore if something is powered on here, it means the user chose to shut them down, so we proceed with shutdown without asking again.
-            log.info(f"VM {selected_vm.name}  - Shutting down VM")
-            task_id = shutdown_vm(log, vm_api, tasks_api, selected_vm)
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_TASKS) as executor:
+        for vm_index, selected_vm in enumerate(fix_needed_vms, start=1):
+            while len(in_flight) >= MAX_PARALLEL_TASKS:
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for completed in done:
+                    results.append(completed.result())
+                    del in_flight[completed]
 
-            # check the shutting down task status until it's completed before proceeding with the rest of the SBfix steps, to avoid doing the rest of the steps while the VM is still shutting down, which could cause issues. We can check the task status by polling the VM's power state until it shows as powered off, or by checking the task status if the API provides that information.
-            log.info(f"VM {selected_vm.name}  - Waiting for VM to be powered off before proceeding with SBfix steps")
+            future = executor.submit(
+                process_vm,
+                selected_vm,
+                vm_index,
+                total_vms,
+                log,
+                vm_api,
+                tasks_api,
+                categories,
+            )
+            in_flight[future] = selected_vm.ext_id
 
-            log.info(f"VM {selected_vm.name}  - adding the sbfix_vm_shutdown: True category to indicate the VM was shut down as part of the SBfix run")
-        
-        # re-check whatever the VM is Powered On or Off, and if it's still on, skip it
-        current_power_state = get_current_power_state(log, vm_api, selected_vm)
-        if current_power_state != "OFF":
-            log.error(f"VM {selected_vm.name}  - VM is ON; expected state Off. Asssuming it was powered on in the meantime... skipping it.")
-            continue
+            if vm_index < total_vms:
+                time.sleep(TASK_START_INTERVAL_SECONDS)
 
+        while in_flight:
+            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for completed in done:
+                results.append(completed.result())
+                del in_flight[completed]
 
-        # Secure Boot deactivation
-        log.info(f"VM {selected_vm.name}  - Deactivating Secure Boot if enabled")
-        post_check_result = deactivate_secure_boot(log, vm_api, tasks_api, selected_vm)
-        log.info(f"VM {selected_vm.name}  - Post-Check: Verifying Secure Boot is disabled: {post_check_result}")
-        if post_check_result == "failed":
-            log.error(f"VM {selected_vm.name}  - SBfix failed at Secure Boot deactivation step. Cannot continue")
-            exit(1)
-        
-        # adding sbfix_sb_deactivated_true
-        log.info(f"VM {selected_vm.name}  - Adding the sbfix_sb_deactivated:true category to indicate SB was deactivated as part of the SBfix run")
-        post_check_result = add_vm_to_category(log, vm_api, tasks_api, selected_vm, [categories["sbfix_sb_deactivated_true"]])
-        log.debug(f"VM {selected_vm.name}  - Post-Check: Verifying sbfix_sb_deactivated_true category was added: {post_check_result}")
-        if post_check_result == "failed":
-            log.error(f"VM {selected_vm.name}  - SBfix failed at adding sbfix_sb_deactivated_true step. Cannot continue")
-            exit(1)
+    success_count = sum(1 for result in results if result["status"] == "success")
+    skipped_count = sum(1 for result in results if result["status"] == "skipped")
+    failed_count = sum(1 for result in results if result["status"] == "failed")
 
-        # Secure Boot re-activation and vTPM activation
-        log.info(f"VM {selected_vm.name}  - Reactivating Secure Boot and activating vTPM")
-        post_check_result = reactivate_secure_boot_and_vtpm(log, vm_api, tasks_api, selected_vm)
-        log.debug(f"VM {selected_vm.name}  - Post-Check: Verifying Secure Boot is enabled and vTPM is enabled: {post_check_result}")
-        if post_check_result == "failed":
-            log.error(f"VM {selected_vm.name}  - SBfix failed at Secure Boot re-activation and vTPM activation step. Cannot continue")
-            exit(1)
-        
-        # adding sbfix_secure_boot_reactivated_true and sbfix_vtpm_activated_true
-        log.info(f"VM {selected_vm.name}  - Adding the sbfix_secure_boot_reactivated:true and sbfix_vtpm_activated:true categories to indicate SB was reactivated and vTPM was activated as part of the SBfix run")
-        post_check_result = add_vm_to_category(log, vm_api, tasks_api, selected_vm, [categories["sbfix_secure_boot_reactivated_true"], categories["sbfix_vtpm_activated_true"], categories["sbfix_needed_false"]])
-        log.debug(f"VM {selected_vm.name}  - Post-Check: Verifying sbfix_secure_boot_reactivated_true, sbfix_vtpm_activated_true and sbfix_needed_false categories were added: {post_check_result}")
-        if post_check_result == "failed":
-            log.error(f"VM {selected_vm.name}  - SBfix failed at adding sbfix_secure_boot_reactivated_true and sbfix_vtpm_activated_true step. Cannot continue")
-            exit(1)
-
-        #removing the sbfix_needed:true category and adding sbfix_needed:false category to indicate the VM has been processed, and adding other categories to indicate what actions were taken and what the post-check results were. The exact categories to add will depend on the final category design.
-        if vm.categories and categories["sbfix_needed_true"].ext_id in [cat.ext_id for cat in vm.categories]:
-            log.info(f"VM {selected_vm.name}  - Updating categories to reflect SBfix run results")
-            post_check_result = remove_vm_from_category(log, vm_api, tasks_api, selected_vm [categories["sbfix_needed_true"]])
-            log.debug(f"VM {selected_vm.name}  - Post-Check: Verifying sbfix_needed_true category was removed: {post_check_result}")
-            if post_check_result == "failed":
-                log.error(f"VM {selected_vm.name}  - SBfix failed at removing sbfix_needed_true category step. Cannot continue")
-                exit(1)
-
-        log.info(f"VM {selected_vm.name}  - SBfix completed successfully for this VM")
-        log.info("-" * 50)
-        log.info("")
-        
-    log.info("SBfix run completed")
+    log.info(
+        f"SBfix run completed - success: {success_count}, skipped: {skipped_count}, failed: {failed_count}"
+    )
+    if failed_count > 0:
+        raise SystemExit(1)
