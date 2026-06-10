@@ -192,6 +192,12 @@ if __name__ == "__main__":
     }
 
     fix_needed_vms = []
+    filtered_vms = []
+
+    sbfix_needed_false_id = categories["sbfix_needed_false"].ext_id if categories["sbfix_needed_false"] else None
+    patched_vms = [vm for vm in all_vms if sbfix_needed_false_id and vm.categories and sbfix_needed_false_id in [cat.ext_id for cat in vm.categories]]
+    unpatched_vms = [vm for vm in all_vms if not (sbfix_needed_false_id and vm.categories and sbfix_needed_false_id in [cat.ext_id for cat in vm.categories])]
+
     for vm in all_vms:
         log.debug(f"VM: {vm.name}")
 
@@ -205,7 +211,9 @@ if __name__ == "__main__":
                 log.debug(f"  VM name does not contain {args.filter_value}, skipping")
                 continue
 
-        if vm.categories and categories["sbfix_needed_false"].ext_id in [cat.ext_id for cat in vm.categories]:
+        filtered_vms.append(vm)
+
+        if sbfix_needed_false_id and vm.categories and sbfix_needed_false_id in [cat.ext_id for cat in vm.categories]:
             log.debug("  Already tagged with sbfix_needed:false, skipping")
             continue
 
@@ -214,6 +222,8 @@ if __name__ == "__main__":
     log.info(
         f"Found {len(fix_needed_vms)} VMs to be targeted for SBfix based on filter type: {args.filter_type}"
     )
+
+    filtered_vms_count = len(filtered_vms)
 
     if fix_needed_vms:
         print(f"\nVMs filtered using: {args.filter_type}")
@@ -286,7 +296,33 @@ if __name__ == "__main__":
     skipped_count = sum(1 for result in results if result["status"] == "skipped")
     failed_count = sum(1 for result in results if result["status"] == "failed")
 
-    summary_path = write_summary_log(LOG_DIR, results)
+    filtered_patched_vms = [vm for vm in filtered_vms if sbfix_needed_false_id and vm.categories and sbfix_needed_false_id in [cat.ext_id for cat in vm.categories]]
+    filtered_unpatched_powered_on_vms = sum(
+        1
+        for vm in filtered_vms
+        if not (sbfix_needed_false_id and vm.categories and sbfix_needed_false_id in [cat.ext_id for cat in vm.categories])
+        and vm.power_state == "ON"
+    )
+    filtered_unpatched_powered_off_vms = sum(
+        1
+        for vm in filtered_vms
+        if not (sbfix_needed_false_id and vm.categories and sbfix_needed_false_id in [cat.ext_id for cat in vm.categories])
+        and vm.power_state == "OFF"
+    )
+
+    inventory_counts = {
+        "filter_type": args.filter_type,
+        "filter_used": "sbfix_needed:true" if args.filter_type == "category" else args.filter_value,
+        "total_vms_in_pc": len(all_vms),
+        "pc_patched_vms": len(patched_vms),
+        "pc_not_yet_patched_vms": len(unpatched_vms),
+        "filtered_vms": filtered_vms_count,
+        "filtered_unpatched_powered_on_vms": filtered_unpatched_powered_on_vms,
+        "filtered_unpatched_powered_off_vms": filtered_unpatched_powered_off_vms,
+        "filtered_patched_vms": len(filtered_patched_vms),
+    }
+
+    summary_path = write_summary_log(LOG_DIR, results, inventory_counts)
 
     log.info(
         f"SBfix run completed - success: {success_count}, skipped: {skipped_count}, failed: {failed_count}"

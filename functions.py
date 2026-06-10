@@ -572,9 +572,12 @@ def get_current_power_state(log, vm_api, vm) -> str:
                 continue
             return "unknown"
 
-def write_summary_log(log_dir, results):
+def write_summary_log(log_dir, results, inventory_counts=None):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     summary_path = log_dir / f"sbfix_summary_{timestamp}.log"
+
+    if inventory_counts is None:
+        inventory_counts = {}
 
     success_count = sum(1 for result in results if result["status"] == "success")
     skipped = [result for result in results if result["status"] == "skipped"]
@@ -583,6 +586,16 @@ def write_summary_log(log_dir, results):
     with summary_path.open("w", encoding="utf-8") as summary_file:
         summary_file.write("SBfix run summary\n")
         summary_file.write(f"Generated: {timestamp}\n")
+        summary_file.write(f"Filter type: {inventory_counts.get('filter_type', 'unknown')}\n")
+        summary_file.write(f"Filter used: {inventory_counts.get('filter_used', 'unknown')}\n")
+        summary_file.write(f"Total VMs in PC: {inventory_counts.get('total_vms_in_pc', 0)}\n")
+        summary_file.write(f"Total VMs in PC patched: {inventory_counts.get('pc_patched_vms', 0)}\n")
+        summary_file.write(f"Total VMs in PC not-yet-patched: {inventory_counts.get('pc_not_yet_patched_vms', 0)}\n")
+
+        summary_file.write(f"Total VMs matched by filter: {inventory_counts.get('filtered_vms', 0)}\n")
+        summary_file.write(f"Total VMs matched by filter - Unpatched powered ON VMs: {inventory_counts.get('filtered_unpatched_powered_on_vms', 0)}\n")
+        summary_file.write(f"Total VMs matched by filter - Unpatched powered OFF VMs: {inventory_counts.get('filtered_unpatched_powered_off_vms', 0)}\n")
+        summary_file.write(f"Total VMs matched by filter - Patched VMs: {inventory_counts.get('filtered_patched_vms', 0)}\n")
         summary_file.write(
             f"Totals - success: {success_count}, skipped: {len(skipped)}, failed: {len(failed)}\n"
         )
