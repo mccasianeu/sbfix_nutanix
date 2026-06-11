@@ -81,6 +81,16 @@ Common options:
 | `--filter-type` | Targeting mode: `category` or `name`. |
 | `--filter-value` | Name substring used when `--filter-type=name`. |
 
+## Reporting
+
+`generate_report.py` creates `log/sbfix_report_<timestamp>.csv` with one row per VM and these columns: `vm_name`, `categories`, `patch_status`, `power_state`, and `is_broken` (`yes` if `vm.project` is missing).
+
+Example:
+
+```bash
+python3 generate_report.py --pc=<pc> --username=<username> --filter-type=name --filter-value=<name-fragment>
+```
+
 ## Workflow
 
 ```mermaid

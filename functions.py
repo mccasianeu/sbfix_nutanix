@@ -151,7 +151,7 @@ def build_tasks_api(args: argparse.Namespace) -> TasksApi:
 
 def list_all_vms(vm_api: VmApi, page_size: int) -> list[Any]:
     vms: list[Any] = []
-    page = 0
+    page=0
 
     while True:
         response = vm_api.list_vms(_page=page, _limit=page_size)
@@ -170,7 +170,7 @@ def list_all_vms(vm_api: VmApi, page_size: int) -> list[Any]:
 
 def list_all_categories(categories_api: CategoriesApi, page_size: int) -> list[Any]:
     categories: list[Any] = []
-    page = 0
+    page=0
 
     while True:
         response = categories_api.list_categories(_page=page, _limit=page_size)
@@ -605,6 +605,7 @@ def write_summary_log(log_dir, results, inventory_counts=None):
         inventory_counts = {}
 
     success_count = sum(1 for result in results if result["status"] == "success")
+    successful = [result for result in results if result["status"] == "success"]
     skipped = [result for result in results if result["status"] == "skipped"]
     failed = [result for result in results if result["status"] == "failed"]
 
@@ -624,6 +625,13 @@ def write_summary_log(log_dir, results, inventory_counts=None):
         summary_file.write(
             f"Totals - success: {success_count}, skipped: {len(skipped)}, failed: {len(failed)}\n"
         )
+
+        summary_file.write("\nSuccessfully patched VMs:\n")
+        if successful:
+            for result in sorted(successful, key=lambda item: item["vm"].lower()):
+                summary_file.write(f"- {result['vm']}\n")
+        else:
+            summary_file.write("- none\n")
 
         summary_file.write("\nSkipped VMs:\n")
         if skipped:

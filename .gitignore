@@ -2,3 +2,4 @@ log/*
 .vscode/*
 .devcontainer/*
 *.pyc
+.DS_Store
